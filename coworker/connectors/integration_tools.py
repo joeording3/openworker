@@ -280,7 +280,7 @@ def _gmail_label_map(token: str) -> dict[str, str]:
     if not resp.get("ok"):
         return {}
     labels = (resp.get("data") or {}).get("labels") or []
-    return {str(l.get("id") or ""): str(l.get("name") or "") for l in labels}
+    return {str(lbl.get("id") or ""): str(lbl.get("name") or "") for lbl in labels}
 
 
 def _gmail_is_hidden(

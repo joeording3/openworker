@@ -150,18 +150,18 @@ _CONNECT_FAILED_DETAIL = (
     "Close this tab and try again from OpenWorker."
 )
 
-from ..attachments import (
+from ..attachments import (  # noqa: E402
     MAX_ATTACHMENTS as _MAX_ATTACHMENTS,
     MAX_IMAGE_CHARS,
     MAX_PDF_CHARS,
     MAX_TEXT_CHARS,
     build_user_content,
 )
-from ..engine import ApprovalOutcome
-from ..inbox import VIS_INBOX, VIS_INLINE, args_preview
-from ..permissions import Mode
-from ..providers import AssistantTurn
-from .manager import SessionManager
+from ..engine import ApprovalOutcome  # noqa: E402
+from ..inbox import VIS_INBOX, VIS_INLINE, args_preview  # noqa: E402
+from ..permissions import Mode  # noqa: E402
+from ..providers import AssistantTurn  # noqa: E402
+from .manager import SessionManager  # noqa: E402
 
 
 def create_app(manager: SessionManager) -> FastAPI:
