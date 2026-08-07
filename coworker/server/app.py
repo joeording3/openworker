@@ -21,8 +21,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
-
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -45,6 +43,9 @@ _ALLOWED_ORIGIN_RE = re.compile(
 def _origin_allowed(origin: str | None) -> bool:
     """True if a browser Origin may use the API. Missing Origin (non-browser) passes."""
     return origin is None or bool(_ALLOWED_ORIGIN_RE.match(origin))
+
+
+logger = logging.getLogger(__name__)
 
 
 # Caps on inbound WebSocket traffic. The loopback socket is unauthenticated (any local
