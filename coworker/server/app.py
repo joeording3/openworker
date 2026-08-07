@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
@@ -46,6 +47,11 @@ def _origin_allowed(origin: str | None) -> bool:
 
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 
 
 # Caps on inbound WebSocket traffic. The loopback socket is unauthenticated (any local
