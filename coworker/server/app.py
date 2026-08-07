@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import os
 import re
 import secrets
@@ -19,6 +20,8 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -1817,6 +1820,29 @@ def create_app(manager: SessionManager) -> FastAPI:
                     )
                     if event.type.value in _CHECKPOINTS:
                         manager.save(session_id, engine)
+            except Exception as exc:
+                # Catch all unhandled exceptions — without this, the agent silently dies
+                # mid-turn: no error reaches the GUI, the session is marked idle, and the
+                # user sees nothing happened. This includes stream errors, tool call
+                # failures, and unexpected state errors not caught by the engine layer.
+                import traceback
+
+                logger.error(
+                    "Unhandled exception in run_turn for session %s:\n%s",
+                    session_id,
+                    traceback.format_exc(),
+                )
+                await manager.broadcast_session(
+                    session_id,
+                    {
+                        "type": "error",
+                        "data": {
+                            "error": "Internal server error — the agent crashed mid-turn.",
+                            "error_type": type(exc).__name__,
+                            "raw": str(exc),
+                        },
+                    },
+                )
             finally:
                 manager.mark_idle(session_id)
                 manager.save(session_id, engine)
