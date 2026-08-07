@@ -1851,6 +1851,8 @@ class SessionManager:
             "nav_layout": self._nav_layout(),
             "sessions_peek": self.sessions_peek(),
             "context_bar": self.context_bar(),
+            "always_expand_thinking": self.always_expand_thinking(),
+            "always_expand_raw": self.always_expand_raw(),
             "scratch_base": self._prefs.get("scratch_base")
             or self.DEFAULT_SCRATCH_BASE,
             # Real on-disk secrets location, so the UI shows the OS-native path instead of a
@@ -1919,6 +1921,33 @@ class SessionManager:
         self._prefs["context_bar"] = bool(shown)
         self._save_prefs()
         return {"ok": True, "context_bar": self.context_bar()}
+
+    # -- Chat behavior settings (always-expand thinking, always-expand raw) --
+
+    def always_expand_thinking(self) -> bool:
+        """Whether thinking blocks are expanded by default in the transcript."""
+        return bool(self._prefs.get("always_expand_thinking", False))
+
+    def always_expand_raw(self) -> bool:
+        """Whether raw tool output is expanded by default in the transcript."""
+        return bool(self._prefs.get("always_expand_raw", False))
+
+    def set_chat_behavior(
+        self,
+        always_expand_thinking: Optional[bool] = None,
+        always_expand_raw: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Set + persist chat behavior toggles. Only update the fields that are provided."""
+        if always_expand_thinking is not None:
+            self._prefs["always_expand_thinking"] = bool(always_expand_thinking)
+        if always_expand_raw is not None:
+            self._prefs["always_expand_raw"] = bool(always_expand_raw)
+        self._save_prefs()
+        return {
+            "ok": True,
+            "always_expand_thinking": self.always_expand_thinking(),
+            "always_expand_raw": self.always_expand_raw(),
+        }
 
     # -- PDF attachments / token savings (owner ask, 2026-07-17) ----------------
     DEFAULT_PDF_MAX_PAGES = 20

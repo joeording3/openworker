@@ -4,6 +4,7 @@ import {
   getTrustedWorkspaces,
   setCompactionSettings,
   setContextBar,
+  setChatBehavior,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
@@ -439,6 +440,8 @@ function AppearanceSection() {
 
       <ContextBarCard />
 
+      <ChatBehaviorCard />
+
       <FilesCard />
 
       <TrustedWorkspacesCard />
@@ -836,6 +839,69 @@ function ContextBarCard() {
             A small meter showing how full the model&rsquo;s context window is. Turn it off
             to show this session&rsquo;s token total instead; either way the full breakdown
             is one click away.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+// Chat Behavior card: toggles for always-expand thinking and always-expand raw output.
+function ChatBehaviorCard() {
+  const [expandThinking, setExpandThinking] = useState(false);
+  const [expandRaw, setExpandRaw] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        setExpandThinking(s.always_expand_thinking === true);
+        setExpandRaw(s.always_expand_raw === true);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, []);
+
+  const saveThinking = async (next: boolean) => {
+    setExpandThinking(next);
+    await setChatBehavior({ always_expand_thinking: next });
+  };
+  const saveRaw = async (next: boolean) => {
+    setExpandRaw(next);
+    await setChatBehavior({ always_expand_raw: next });
+  };
+
+  if (!loaded) return null;
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="chat-behavior-card">
+      <div className={FIELD_LABEL}>Chat behavior</div>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="always-expand-thinking-toggle"
+          checked={expandThinking}
+          onChange={(e) => saveThinking(e.target.checked)}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">Always expand thinking</span>
+          <span className="block text-[12px] text-muted">
+            Show model reasoning steps expanded by default instead of collapsed behind a toggle.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="always-expand-raw-toggle"
+          checked={expandRaw}
+          onChange={(e) => saveRaw(e.target.checked)}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">Always expand raw output</span>
+          <span className="block text-[12px] text-muted">
+            Show raw tool arguments and results expanded by default instead of behind a "raw" button.
           </span>
         </span>
       </label>

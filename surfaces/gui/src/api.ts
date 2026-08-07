@@ -702,6 +702,10 @@ export interface ModelSettings {
   // {full id → context window in tokens}, verified matrix entries only — drives the
   // composer's context-fill meter (absent id → the meter hides). Optional for older backends.
   model_context_windows?: Record<string, number>;
+  // Chat behavior: always-expand thinking blocks (default false).
+  always_expand_thinking?: boolean;
+  // Chat behavior: always-expand raw tool output (default false).
+  always_expand_raw?: boolean;
   // Token savings (PDF attachments): fallback for models without native PDF support,
   // and attach-time thresholds. Optional so the GUI is robust to an older backend.
   pdf_fallback?: "text" | "images";
@@ -771,6 +775,24 @@ export async function setContextBar(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ context_bar: shown }),
+  });
+  return res.json();
+}
+
+/** Chat behavior settings (always-expand thinking, always-expand raw output). */
+export interface ChatBehavior {
+  always_expand_thinking: boolean;
+  always_expand_raw: boolean;
+}
+
+/** Persist chat behavior (always-expand thinking, always-expand raw output). */
+export async function setChatBehavior(
+  behavior: Partial<ChatBehavior>,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/settings/chat-behavior`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(behavior),
   });
   return res.json();
 }
@@ -1950,20 +1972,48 @@ export type Handlers = {
 };
 
 export class Session {
-  private ws: WebSocket;
+  private ws!: WebSocket;
+  private sessionId: string;
+  private workspace: string;
+  private agent: string;
+  private handlers: Handlers;
   // Payloads sent before the socket finished opening, replayed on `onopen`. Belt-and-suspenders
   // against the first message being dropped if the user sends in the connect window.
   private outbox: object[] = [];
+  private closed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(sessionId: string, workspace: string, agent: string, handlers: Handlers) {
-    const q = `?workspace=${encodeURIComponent(workspace)}&agent=${encodeURIComponent(agent)}`;
-    this.ws = openWebSocket(`${wsBase()}/ws/session/${sessionId}${q}`);
-    this.ws.onmessage = (e) => handlers.onEvent(JSON.parse(e.data));
+    this.sessionId = sessionId;
+    this.workspace = workspace;
+    this.agent = agent;
+    this.handlers = handlers;
+    this.connect();
+  }
+
+  private connect() {
+    const q = `?workspace=${encodeURIComponent(this.workspace)}&agent=${encodeURIComponent(this.agent)}`;
+    this.ws = openWebSocket(`${wsBase()}/ws/session/${this.sessionId}${q}`);
+    this.ws.onmessage = (e) => {
+      try { this.handlers.onEvent(JSON.parse(e.data)); } catch {}
+    };
     this.ws.onopen = () => {
       this.flush();
-      handlers.onOpen?.();
+      this.handlers.onOpen?.();
     };
-    this.ws.onclose = () => handlers.onClose?.();
+    this.ws.onclose = () => {
+      if (!this.closed) this.scheduleReconnect();
+      else this.handlers.onClose?.();
+    };
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return; // already scheduled
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.closed) return;
+      this.connect();
+    }, 3000); // 3s delay before reconnect
   }
 
   private flush() {

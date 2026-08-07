@@ -1434,6 +1434,15 @@ def create_app(manager: SessionManager) -> FastAPI:
         # Composer: show the context-window fill bar, or just the popover (owner ask).
         return manager.set_context_bar((body or {}).get("context_bar", True))
 
+    @app.post("/v1/settings/chat-behavior")
+    def settings_set_chat_behavior(body: dict) -> dict[str, Any]:
+        # Chat behavior toggles: always-expand thinking, always-expand raw output.
+        b = body or {}
+        return manager.set_chat_behavior(
+            always_expand_thinking=b.get("always_expand_thinking"),
+            always_expand_raw=b.get("always_expand_raw"),
+        )
+
     @app.post("/v1/settings/pdf")
     def settings_set_pdf(body: dict) -> dict[str, Any]:
         # Token savings (owner ask, 2026-07-17): fallback mode for models without native
@@ -1833,10 +1842,36 @@ def create_app(manager: SessionManager) -> FastAPI:
                 return
             asyncio.create_task(run_turn(content, retry=retry, display=display))
 
+        # WebSocket keepalive (FB-0XX): macOS Tauri webviews can idle-close the socket
+        # after ~60s of no inbound traffic (e.g. app goes background, screen off).
+        # Without keepalive, the server-side turn keeps running but the GUI never
+        # receives turn_done → running=true forever (the "zombie session" bug).
+        #
+        # Strategy: send a WS ping every 25s; if the client hasn't sent anything in
+        # 55s (missed two pong windows), consider it dead and exit the receive loop.
+        # The finally block broadcasts turn_done, the GUI reconnects and catches up.
+        _PING_INTERVAL = 25
+        _PONG_TIMEOUT = 55
+
+        async def _ping_loop():
+            try:
+                while True:
+                    await asyncio.sleep(_PING_INTERVAL)
+                    await ws.ping()
+            except Exception:
+                pass
+
+        _alive_task = asyncio.create_task(_ping_loop())
+
         try:
             while True:
                 try:
-                    message = await ws.receive_json()
+                    message = await asyncio.wait_for(
+                        ws.receive_json(), timeout=_PONG_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    _alive_task.cancel()
+                    return  # client is dead — let run_turn finish, fire turn_done
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     await reject_input("Invalid WebSocket message: expected JSON.")
                     continue
@@ -2017,6 +2052,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
+            _alive_task.cancel()
+            try:
+                await _alive_task
+            except asyncio.CancelledError:
+                pass
             manager.unregister_session_client(session_id, ws.send_json)
 
     @app.websocket("/ws/events")

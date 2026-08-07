@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { ApprovalDecision, Item } from "../types";
 import { shortArgs } from "./ApprovalCard";
 import { humanizeAsk, humanizeTool, type HumanLine } from "../humanize";
@@ -75,8 +75,23 @@ function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "le
 // Reasoning-model thinking text (model-layer roadmap item 4): a quiet disclosure —
 // collapsed by default, the trace one click away. `live` = still streaming (pulsing label);
 // App renders that variant above the transcript, this one rides a finalized assistant item.
-export function ThinkingBlock({ text, live }: { text: string; live?: boolean }) {
-  const [open, setOpen] = useState(false);
+export function ThinkingBlock({ text, live, defaultOpen }: { text: string; live?: boolean; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  // Sync to prop changes: loadSettings resolves after mount, so the initial prop may be false
+  // and the real value arrives later. Without this, toggling settings never affects open blocks.
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+
+  // Sticky bottom for live thinking: when text grows and we're open, scroll the body to bottom.
+  useEffect(() => {
+    if (live && open && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [text, live, open]);
+
   return (
     <div className="thinking">
       <button
@@ -90,7 +105,7 @@ export function ThinkingBlock({ text, live }: { text: string; live?: boolean }) 
         </span>
       </button>
       {open && (
-        <div className="thinking-body" data-testid="thinking-body">
+        <div ref={bodyRef} className="thinking-body" data-testid="thinking-body">
           {text}
         </div>
       )}
@@ -177,8 +192,13 @@ function LineText({ line }: { line: HumanLine }) {
   );
 }
 
-function StepRow({ tool, approval }: { tool: ToolItem; approval?: ApprovalItem }) {
-  const [raw, setRaw] = useState(false);
+function StepRow({ tool, approval, defaultRawOpen }: { tool: ToolItem; approval?: ApprovalItem; defaultRawOpen?: boolean }) {
+  const [raw, setRaw] = useState(defaultRawOpen ?? false);
+
+  // Sync to prop changes: loadSettings resolves after mount.
+  useEffect(() => {
+    if (defaultRawOpen) setRaw(true);
+  }, [defaultRawOpen]);
   const running = tool.status === "…";
   const failed = tool.status !== "ok" && !running;
   return (
@@ -239,20 +259,27 @@ function TurnGroup({
   items,
   live,
   streamingText,
+  defaultRawOpen,
 }: {
   items: TurnItem[];
   live?: boolean;
   // Sub-threshold streamed text belongs to THIS group (§33 ref #3): collapsed → it rides
   // the header as the live line; expanded → the small quiet line under the steps.
   streamingText?: string;
+  defaultRawOpen?: boolean;
 }) {
   // Turns start COLLAPSED, running or not (owner call 2026-07-14) — the header's live
   // line is the pulse; expanding is opt-in.
   const rows = buildRows(items);
   const tools = items.filter((it): it is ToolItem => it.kind === "tool");
   const running = live || tools.some((t) => t.status === "…");
-  const [userToggle, setUserToggle] = useState<boolean | null>(null);
+  const [userToggle, setUserToggle] = useState<boolean | null>(defaultRawOpen ? true : null);
   const open = userToggle ?? false;
+
+  // Sync to prop changes: loadSettings resolves after mount.
+  useEffect(() => {
+    if (defaultRawOpen) setUserToggle(true);
+  }, [defaultRawOpen]);
   const lastNarr = [...items].reverse().find((it): it is AssistantItem => it.kind === "assistant");
   const liveLine = streamingText || lastNarr?.text || "";
 
@@ -310,7 +337,7 @@ function TurnGroup({
                 {approvalChip(row.approval.resolved)}
               </div>
             ) : (
-              <StepRow tool={row.tool} approval={row.approval} key={i} />
+              <StepRow tool={row.tool} approval={row.approval} defaultRawOpen={defaultRawOpen} key={i} />
             ),
           )}
           {streamingText && (
@@ -331,16 +358,12 @@ function TurnGroup({
 interface Props {
   items: Item[];
   onApprove: (decision: ApprovalDecision) => void;
-  // The session's live flag. While true, the FINAL run's trailing assistant text is still
-  // narration (status), not the answer — promoting it early made each line flash as a full
-  // ASSISTANT bubble and then vanish into the group when the next tool call arrived
-  // (owner report 2026-07-13). The answer bubble appears once, when the turn ends.
   running?: boolean;
-  // Sub-threshold streamed text (streamGate mode "quiet") — handed to the live turn group.
   streamingText?: string;
-  // Re-run the failed turn (no new user message). Offered only on a retriable notice that
-  // is the transcript tail of an idle session — anywhere else the error is history.
   onRetry?: () => void;
+  // Chat behavior toggles: if true, thinking blocks and raw output start open.
+  defaultThinkingOpen?: boolean;
+  defaultRawOpen?: boolean;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -356,7 +379,7 @@ export function retryAnchor(items: Item[]): number {
   return -1;
 }
 
-export function Transcript({ items, running, streamingText, onRetry }: Props) {
+export function Transcript({ items, running, streamingText, onRetry, defaultThinkingOpen, defaultRawOpen }: Props) {
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
   // breakers (user, connector, notices, plan/dir requests…). Trailing assistant texts are the
   // ANSWER and render as bubbles after the group; interior assistant texts are narration and
@@ -406,6 +429,7 @@ export function Transcript({ items, running, streamingText, onRetry }: Props) {
               items={block.turn}
               live={block.live}
               streamingText={block.live && bi === lastTurnIndex ? streamingText : undefined}
+              defaultRawOpen={defaultRawOpen}
               key={bi}
             />
           );
@@ -438,13 +462,13 @@ export function Transcript({ items, running, streamingText, onRetry }: Props) {
             if (!item.text && item.reasoning)
               return (
                 <div key={bi}>
-                  <ThinkingBlock text={item.reasoning} />
+                  <ThinkingBlock text={item.reasoning} defaultOpen={defaultThinkingOpen} />
                 </div>
               );
             return (
               <div className="group bubble-assistant" key={bi}>
                 <div className="who">assistant</div>
-                {item.reasoning && <ThinkingBlock text={item.reasoning} />}
+                {item.reasoning && <ThinkingBlock text={item.reasoning} defaultOpen={defaultThinkingOpen} />}
                 <Markdown text={item.text} />
                 <BubbleMeta text={item.text} ts={item.ts} align="left" />
               </div>

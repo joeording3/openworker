@@ -588,16 +588,19 @@ pub fn run() {
         std::env::consts::OS
     );
 
-    tauri::Builder::default()
-        // MUST be the first plugin: when a second launch happens (e.g. the user relaunches
-        // while the window is closed-to-tray), this fires in the ALREADY-running instance to
-        // surface its healthy window, and the second process exits before it can spawn a
-        // duplicate sidecar — which previously left a window stuck on "Starting coworker…".
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    // Start with the builder, conditionally add single-instance plugin (disabled in dev).
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    #[cfg(not(debug_assertions))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main(app);
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -688,9 +691,15 @@ pub fn run() {
 
             // 2. Build the window, injecting the sidecar endpoints before the SPA loads.
             //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.
+            let title: &str = {
+                #[cfg(debug_assertions)]
+                { "OpenWorker (dev)" }
+                #[cfg(not(debug_assertions))]
+                { "OpenWorker" }
+            };
             let mut builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("OpenWorker")
+                    .title(title)
                     .inner_size(1360.0, 900.0)
                     .min_inner_size(980.0, 640.0)
                     // Let the WEBVIEW receive OS file drags: Tauri's own drag-drop handler

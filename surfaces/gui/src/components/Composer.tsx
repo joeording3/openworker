@@ -81,6 +81,8 @@ interface Props {
   resetKey?: string;
   // Surface-specific hint shown in the empty textarea.
   placeholder?: string;
+  // User message texts from the session transcript — used to seed prompt history on load.
+  userMessages?: string[];
   // Per-session token usage (OPE-42) — absent/empty hides the usage chip entirely
   // (older servers, backends that don't report usage, fresh sessions).
   usage?: SessionUsage;
@@ -102,6 +104,20 @@ export function Composer(props: Props) {
   const [pendingSkill, setPendingSkill] = useState<SessionSkillRow | null>(null);
   const [slashSkills, setSlashSkills] = useState<SessionSkillRow[] | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  // Prompt history (per-session): up/down keys cycle through previously sent messages so the
+  // user can easily resubmit or edit a prior prompt. Reset when the session changes.
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const draftRef = useRef(""); // text the user typed before opening history — restored on down past top
+  // Sync history from session user messages (seeded on load, updated on new turns).
+  // Local submit() appends too, so we only overwrite when the prop length exceeds local history.
+  useEffect(() => {
+    const msgs = props.userMessages ?? [];
+    if (msgs.length > history.length) {
+      setHistory(msgs);
+    }
+  }, [props.userMessages]);
+
   const prefixIntact =
     pendingSkill !== null &&
     (text === `/${pendingSkill.name}` || text.startsWith(`/${pendingSkill.name} `));
@@ -170,6 +186,8 @@ export function Composer(props: Props) {
     setText("");
     setAttachments([]);
     setPendingSkill(null);
+    setHistory([]);
+    setHistoryIndex(-1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
 
@@ -329,6 +347,8 @@ export function Composer(props: Props) {
       return;
     }
     props.onSend(t, attachments, skill);
+    setHistory((prev) => [...prev, t]);
+    setHistoryIndex(-1);
     setText("");
     setAttachments([]);
     setPendingSkill(null);
@@ -361,6 +381,28 @@ export function Composer(props: Props) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
+    }
+    // Prompt history navigation — up goes back, down goes forward to the draft.
+    if (e.key === "ArrowUp" && history.length) {
+      e.preventDefault();
+      if (historyIndex === -1) {
+        draftRef.current = text;
+        setHistoryIndex(history.length - 1);
+        setText(history[history.length - 1]);
+      } else if (historyIndex > 0) {
+        setHistoryIndex((i) => i - 1);
+        setText(history[historyIndex - 1]);
+      }
+    }
+    if (e.key === "ArrowDown" && historyIndex !== -1) {
+      e.preventDefault();
+      if (historyIndex < history.length - 1) {
+        setHistoryIndex((i) => i + 1);
+        setText(history[historyIndex + 1]);
+      } else {
+        setHistoryIndex(-1);
+        setText(draftRef.current);
+      }
     }
   };
 

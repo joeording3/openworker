@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useLayoutEffect, useEffect, useRef, useState, type PointerEvent } from "react";
 import {
   announceInboxUnlock,
   finalizeAutomationRun,
@@ -28,6 +28,7 @@ import {
   type SurfaceVisibility,
   type WorkspaceCommandTrust,
 } from "./api";
+import type { ConversationMessage } from "./api";
 import type {
   ApprovalDecision,
   Attachment,
@@ -93,6 +94,26 @@ function normalizeTodos(raw: unknown): TodoItem[] {
     }
     return { content: String(entry ?? ""), status: "pending" as const };
   });
+}
+
+/** Restore the right-rail progress panel from the last todo_write tool call
+ *  in the persisted transcript. The live stream sets todo via tool_proposed
+ *  events; on session load we scan for the same data in assistant tool_calls. */
+function extractLastTodo(messages: ConversationMessage[]): TodoItem[] | null {
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    for (const tc of m.tool_calls || []) {
+      if (tc.function?.name !== "todo_write") continue;
+      try {
+        const args = JSON.parse(tc.function.arguments || "{}");
+        const todos = args.todos ?? args.items;
+        if (Array.isArray(todos) && todos.length) return normalizeTodos(todos);
+      } catch {
+        /* malformed — skip */
+      }
+    }
+  }
+  return null;
 }
 
 // Fallbacks used only before the persona list loads (the in-component, family-aware
@@ -168,6 +189,9 @@ export function App() {
   // Settings: show the composer's context-window fill bar. OFF by default (owner ask),
   // so an older backend without the field also shows the session total.
   const [contextBar, setContextBar] = useState(false);
+  // Chat behavior: always-expand thinking blocks and raw tool output. Defaults OFF.
+  const [alwaysExpandThinking, setAlwaysExpandThinking] = useState(false);
+  const [alwaysExpandRaw, setAlwaysExpandRaw] = useState(false);
   // Per-session token usage (OPE-42): rebuilt from the transcript on session load,
   // accumulated live from assistant_message events, reset with the transcript.
   const [usage, setUsage] = useState<SessionUsage>(emptyUsage());
@@ -419,6 +443,12 @@ export function App() {
           const messages = await getSessionMessages(last.session_id);
           setItems(itemsFromMessages(messages));
           setUsage(usageFromMessages(messages));
+          // Restore right-rail progress from the transcript.
+          const lastTodo = extractLastTodo(messages);
+          setTodo(lastTodo ?? []);
+          // Restore running state from liveness if available.
+          const info = loadedSessions.find((s) => s.session_id === last.session_id);
+          setRunning(info?.liveness === "working");
         } catch {
           setItems([]);
           setUsage(emptyUsage());
@@ -512,6 +542,8 @@ export function App() {
         setModelLabels(s.model_labels || {});
         setModelContextWindows(s.model_context_windows || {});
         setContextBar(s.context_bar === true);
+        setAlwaysExpandThinking(s.always_expand_thinking === true);
+        setAlwaysExpandRaw(s.always_expand_raw === true);
         setModelReady(s.model_ready);
         if (s.surfaces) setSurfaces(s.surfaces);
       })
@@ -804,12 +836,13 @@ export function App() {
   const atBottomRef = useRef(true);
   const autoScrollingRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const ignoreScrollUntil = useRef(0); // timestamp: ignore scroll events before this (React render artifacts)
   const [following, setFollowing] = useState(true);
   const scrollToBottom = () => {
     const el = scrollRef.current;
     if (!el) return;
     autoScrollingRef.current = true;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    el.scrollTop = el.scrollHeight; // instant snap — smooth scrolls desync with streaming growth
   };
   const followLatest = () => {
     atBottomRef.current = true;
@@ -819,6 +852,8 @@ export function App() {
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
+    // Ignore scroll events that are artifacts of React renders (handled by useLayoutEffect guard).
+    if (Date.now() < ignoreScrollUntil.current) return;
     const top = el.scrollTop;
     const atBottom = el.scrollHeight - top - el.clientHeight < 48;
     if (autoScrollingRef.current) {
@@ -832,16 +867,55 @@ export function App() {
     atBottomRef.current = atBottom;
     setFollowing(atBottom);
   };
-  // A different session is a fresh viewport — never inherit a scrolled-up state. Declared
-  // BEFORE the auto-scroll effect: when a session switch and its hydrated items land in one
-  // commit, the reset must run first or the stale ref would skip the initial bottom-scroll.
+  // A different session is a fresh viewport — never inherit a scrolled-up state.
   useEffect(() => {
     atBottomRef.current = true;
     setFollowing(true);
   }, [sessionId]);
+
+  // Always snap to bottom when items or streaming text changes. The useLayoutEffect guard
+  // suppresses the React-render scroll event that would poison atBottomRef. This handles:
+  // - App load: items arrive from server, then uiReady flips → this re-fires and snaps
+  // - New turns: user messages + assistant responses
+  // - Streaming: incremental text updates
+  // - Thinking/raw expansion: new items with reasoning content
   useEffect(() => {
-    if (atBottomRef.current) scrollToBottom();
-  }, [items, streaming]);
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = true;
+    el.scrollTop = el.scrollHeight;
+  }, [items, streaming, uiReady]);
+
+  // Suppress scroll events that fire synchronously during React renders (before effects run).
+  // Without this, handleScroll would see scrollTop=0 and set atBottomRef=false, racing with
+  // the scroll-to-bottom effect above. We set a timestamp that handleScroll checks: any scroll
+  // event within 50ms of this layout effect is a React-render artifact, not user interaction.
+  useLayoutEffect(() => {
+    ignoreScrollUntil.current = Date.now() + 50;
+  }, [items, streaming, uiReady]);
+
+  // Sticky-bottom: poll the scroll container every frame. If the user was at the bottom,
+  // snap to latest scrollHeight. Catches content growth between React renders (CSS transitions,
+  // details/summary expand, raw output toggle).
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+
+    let rafId: number;
+    const tick = () => {
+      const scrollEl = scrollRef.current;
+      if (!scrollEl) return;
+      if (atBottomRef.current) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+
+    return () => cancelAnimationFrame(rafId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface, sessionId]);
+
 
   // Track produced-file count for the topbar "Artifacts" affordance (works even when the rail is
   // hidden, where the rail itself doesn't fetch). Cowork only; refreshes on file writes/turn end.
@@ -977,9 +1051,7 @@ export function App() {
   const openSessionFromInbox = (sid: string, ws: string, ag: string) => selectSession(sid, ws, ag);
   const selectSession = async (id: string, ws: string, ag: string) => {
     setSurface("session"); // selecting a conversation always returns to the conversation view
-    setTodo([]);
     setStreaming("");
-    setRunning(false);
     if (ag) setAgent(ag);
     if (!gatesWorkspace(ag)) setShowGate(false);
     if (ws && ws !== workspace) {
@@ -991,9 +1063,27 @@ export function App() {
       const messages = await getSessionMessages(id);
       setItems(itemsFromMessages(messages));
       setUsage(usageFromMessages(messages));
+
+      // Restore right-rail progress (todo) from the last todo_write tool call
+      // in the transcript — same mechanism the live stream uses, just from
+      // persisted data instead of tool_proposed events.
+      const lastTodo = extractLastTodo(messages);
+      setTodo(lastTodo ?? []);
+
+      // Restore running state: if the server still has a live turn for this
+      // session (liveness === "working"), the UI must show running=true so the
+      // user sees spinner/composer lock and doesn't think the agent died.
+      const sessionInfo = sessions.find((s) => s.session_id === id);
+      if (sessionInfo?.liveness === "working") {
+        setRunning(true);
+      } else {
+        setRunning(false);
+      }
     } catch {
       setItems([]);
       setUsage(emptyUsage());
+      setTodo([]);
+      setRunning(false);
     }
   };
   const switchAgent = async (name: string) => {
@@ -1038,9 +1128,15 @@ export function App() {
         const messages = await getSessionMessages(target.sessionId);
         setItems(itemsFromMessages(messages));
         setUsage(usageFromMessages(messages));
+        const lastTodo = extractLastTodo(messages);
+        setTodo(lastTodo ?? []);
+        const sessionInfo = sessions.find((s) => s.session_id === target.sessionId);
+        setRunning(sessionInfo?.liveness === "working");
       } catch {
         setItems([]);
         setUsage(emptyUsage());
+        setTodo([]);
+        setRunning(false);
       }
       return;
     }
@@ -1539,6 +1635,8 @@ export function App() {
                     onApprove={approve}
                     running={running}
                     onRetry={retry}
+                    defaultThinkingOpen={alwaysExpandThinking}
+                    defaultRawOpen={alwaysExpandRaw}
                     // §33 ref #3: sub-threshold streamed text renders INSIDE the live turn
                     // group (header when collapsed, quiet line when expanded) — never as a
                     // floating paragraph.
@@ -1549,7 +1647,7 @@ export function App() {
                       the message finalizes. */}
                   {running && reasoningStream && !streaming && (
                     <div className="transcript">
-                      <ThinkingBlock text={reasoningStream} live />
+                      <ThinkingBlock text={reasoningStream} live defaultOpen={alwaysExpandThinking} />
                     </div>
                   )}
                   {/* Compaction runs between provider turns (nothing streams during it), so
@@ -1609,6 +1707,7 @@ export function App() {
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
               prefill={composerPrefill}
               resetKey={sessionId}
+              userMessages={items.filter((it) => it.kind === "user").map((it) => it.text)}
               usage={usage}
               contextWindow={modelContextWindows[model]}
               contextBar={contextBar}
